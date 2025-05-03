@@ -7,17 +7,17 @@ import psutil
 import argparse
 
 from concurrent import futures
-import taskstealing_pb2
-import taskstealing_pb2_grpc
+import tasks_pb2
+import tasks_pb2_grpc
 from task import Task
 from distance import DISTANCES
-import taskstealing_pb2_grpc
+import tasks_pb2_grpc
 from grpc import insecure_channel
-from taskstealing_pb2 import Task as ProtoTask
+from tasks_pb2 import Task as ProtoTask
 import multiprocessing
 from multiprocessing import Value
 
-class TaskStealingServer(taskstealing_pb2_grpc.TaskStealingServiceServicer):
+class TaskStealingServer(tasks_pb2_grpc.TaskStealingServiceServicer):
     def __init__(self, server_id, global_counter, max_tasks):
         self.global_counter = global_counter
         self.max_tasks = max_tasks
@@ -34,7 +34,7 @@ class TaskStealingServer(taskstealing_pb2_grpc.TaskStealingServiceServicer):
 
     def GetQueueLength(self, request, context):
         with self.lock:
-            return taskstealing_pb2.QueueLengthResponse(length=self.task_queue.qsize())
+            return tasks_pb2.QueueLengthResponse(length=self.task_queue.qsize())
     
     def update_global_counter():
         with FileLock("global_counter.txt.lock"):
@@ -48,23 +48,23 @@ class TaskStealingServer(taskstealing_pb2_grpc.TaskStealingServiceServicer):
 
     def GetCPUUsage(self, request, context):
         usage = psutil.cpu_percent(interval=0.1)
-        return taskstealing_pb2.CPUUsageResponse(usage=usage)
+        return tasks_pb2.CPUUsageResponse(usage=usage)
 
     def StealTask(self, request, context):
         with self.lock:
             if not self.task_queue.empty():
                 task = self.task_queue.get()
-                return taskstealing_pb2.TaskResponse(
+                return tasks_pb2.TaskResponse(
                     task=ProtoTask(name=task.name, duration=task.duration),
                     success=True
                 )
-        return taskstealing_pb2.TaskResponse(success=False)
+        return tasks_pb2.TaskResponse(success=False)
 
     def SendTask(self, request, context):
         with self.lock:
             task = Task(request.name, request.duration)
             self.task_queue.put(task)
-            return taskstealing_pb2.Ack(success=True)
+            return tasks_pb2.Ack(success=True)
 
     def start_processing(self):
         def process_loop():
@@ -101,8 +101,8 @@ class TaskStealingServer(taskstealing_pb2_grpc.TaskStealingServiceServicer):
 
             stub = self.peers[peer_id]
             try:
-                other_len = stub.GetQueueLength(taskstealing_pb2.Empty()).length
-                other_cpu = stub.GetCPUUsage(taskstealing_pb2.Empty()).usage
+                other_len = stub.GetQueueLength(tasks_pb2.Empty()).length
+                other_cpu = stub.GetCPUUsage(tasks_pb2.Empty()).usage
 
                 print(f"[Server {self.id}] trying to steal from {peer_id} | "
                   f"my_len={my_len}, other_len={other_len}, "
@@ -118,7 +118,7 @@ class TaskStealingServer(taskstealing_pb2_grpc.TaskStealingServiceServicer):
                             can_steal = True
 
                     if can_steal:
-                        response = stub.StealTask(taskstealing_pb2.Empty())
+                        response = stub.StealTask(tasks_pb2.Empty())
                         if response.success:
                             self.task_queue.put(Task(response.task.name, response.task.duration))
                             print(f"[Server {self.id}] stole {response.task.name} from {peer_id}")
@@ -130,7 +130,7 @@ class TaskStealingServer(taskstealing_pb2_grpc.TaskStealingServiceServicer):
 
 
     def _attempt_steal(self, stub, peer_id):
-        response = stub.StealTask(taskstealing_pb2.Empty())
+        response = stub.StealTask(tasks_pb2.Empty())
         if response.success:
             self.task_queue.put(Task(response.task.name, response.task.duration))
             print(f"[Server {self.id}] stole {response.task.name} from {peer_id}")
@@ -139,7 +139,7 @@ class TaskStealingServer(taskstealing_pb2_grpc.TaskStealingServiceServicer):
 def serve(server_id, port, global_counter, max_tasks):
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
     ts_server = TaskStealingServer(server_id, global_counter, max_tasks)
-    taskstealing_pb2_grpc.add_TaskStealingServiceServicer_to_server(ts_server, server)
+    tasks_pb2_grpc.add_TaskStealingServiceServicer_to_server(ts_server, server)
     server.add_insecure_port(f"[::]:{port}")
     server.start()
     print(f"Server {server_id} started on port {port}")
@@ -150,7 +150,7 @@ def serve(server_id, port, global_counter, max_tasks):
             continue
         peer_port = 50050 + i
         channel = grpc.insecure_channel(f"localhost:{peer_port}")
-        stub = taskstealing_pb2_grpc.TaskStealingServiceStub(channel)
+        stub = tasks_pb2_grpc.TaskStealingServiceStub(channel)
         ts_server.peers[i] = stub
 
     ts_server.start_processing()
