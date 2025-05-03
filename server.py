@@ -1,167 +1,179 @@
-import grpc
+#!/usr/bin/env python3
+import os
 import time
-import random
 import threading
 import queue
 import psutil
-import argparse
-
+import grpc
 from concurrent import futures
-import tasks_pb2
-import tasks_pb2_grpc
-from task import Task
-from distance import DISTANCES
-import tasks_pb2_grpc
-from grpc import insecure_channel
-from tasks_pb2 import Task as ProtoTask
-import multiprocessing
+import tasks_pb2, tasks_pb2_grpc
 from multiprocessing import Value
+from distance import DISTANCES
 
-class TaskStealingServer(tasks_pb2_grpc.TaskStealingServiceServicer):
-    def __init__(self, server_id, global_counter, max_tasks):
+# NWR parameters
+N = 5
+W = 3  # write quorum
+R = 2  # read quorum
+
+class NWRServer(tasks_pb2_grpc.TaskServiceServicer):
+    def __init__(self, server_id, port, global_counter, max_tasks):
+        self.id = server_id
+        self.port = port
         self.global_counter = global_counter
         self.max_tasks = max_tasks
-        self.id = server_id
         self.task_queue = queue.Queue()
-        if self.id == 2:
-            print(f"[Server {self.id}] started with NO initial tasks to test stealing.")
-        else:
-            for i in range(random.randint(6, 10)):
-                self.task_queue.put(Task(f"Task_{self.id}_{i}", random.uniform(0.5, 1.5)))
-
-        self.lock = threading.Lock()
+        self.data_store = {}
         self.peers = {}
+        self.lock = threading.Lock()
 
-    def GetQueueLength(self, request, context):
+        # No initial seeding. Queue starts empty.
+        print(f"[{self.id}] Server initialized with empty task queue.")
+
+    # --- Task Stealing & Heartbeats ---
+    def SendTask(self, req, ctx):
         with self.lock:
-            return tasks_pb2.QueueLengthResponse(length=self.task_queue.qsize())
-    
-    def update_global_counter():
-        with FileLock("global_counter.txt.lock"):
-            with open("global_counter.txt", "r+") as f:
-                count = int(f.read())
-                count += 1
-                f.seek(0)
-                f.write(str(count))
-                f.truncate()
-            return count
+            self.task_queue.put((req.name, req.weight))
+            print(f"[{self.id}] Received task {req.name} (w={req.weight}) from client/peer")
+        return tasks_pb2.Ack(success=True)
 
-    def GetCPUUsage(self, request, context):
-        usage = psutil.cpu_percent(interval=0.1)
-        return tasks_pb2.CPUUsageResponse(usage=usage)
+    def GetQueueLength(self, req, ctx):
+        return tasks_pb2.QueueLengthResponse(length=self.task_queue.qsize())
 
-    def StealTask(self, request, context):
+    def GetCPUUsage(self, req, ctx):
+        cpu = psutil.cpu_percent(interval=0.1)
+        return tasks_pb2.CPUUsageResponse(usage=cpu)
+
+    def StealTask(self, req, ctx):
         with self.lock:
             if not self.task_queue.empty():
-                task = self.task_queue.get()
+                name, w = self.task_queue.get()
+                print(f"[{self.id}] Providing stolen task {name} (w={w})")
                 return tasks_pb2.TaskResponse(
-                    task=ProtoTask(name=task.name, duration=task.duration),
+                    task=tasks_pb2.TaskRequest(name=name, weight=w),
                     success=True
                 )
         return tasks_pb2.TaskResponse(success=False)
 
-    def SendTask(self, request, context):
-        with self.lock:
-            task = Task(request.name, request.duration)
-            self.task_queue.put(task)
-            return tasks_pb2.Ack(success=True)
+    def Heartbeat(self, req, ctx):
+        return tasks_pb2.HeartbeatResponse(timestamp=int(time.time()))
 
+    # --- NWR Replication ---
+    def WriteData(self, req, ctx):
+        # write locally
+        self.data_store[req.key] = req.value
+        # replicate to W-1 nearest peers
+        ack_count = 1
+        for peer_id, _ in sorted(DISTANCES[self.id].items(), key=lambda x: x[1])[: W-1]:
+            stub = self.peers.get(peer_id)
+            if not stub:
+                continue
+            try:
+                res = stub.WriteData(req)
+                if res.success:
+                    ack_count += 1
+            except Exception:
+                pass
+        success = ack_count >= W
+        print(f"[{self.id}] WriteData key={req.key}, success={success} (acks={ack_count})")
+        return tasks_pb2.Ack(success=success)
+
+    def ReadData(self, req, ctx):
+        # local first
+        if req.key in self.data_store:
+            return tasks_pb2.ReadResponse(
+                value=self.data_store[req.key], success=True, served_by=self.id
+            )
+        # query peers until R
+        for peer_id, _ in sorted(DISTANCES[self.id].items(), key=lambda x: x[1]):
+            stub = self.peers.get(peer_id)
+            if not stub:
+                continue
+            try:
+                resp = stub.ReadData(req)
+                if resp.success:
+                    return tasks_pb2.ReadResponse(
+                        value=resp.value, success=True, served_by=peer_id
+                    )
+            except Exception:
+                pass
+        return tasks_pb2.ReadResponse(success=False)
+
+    # --- Processing & Stealing Loop ---
     def start_processing(self):
-        def process_loop():
+        def loop():
             while True:
                 if not self.task_queue.empty():
-                    task = self.task_queue.get()
-                    task.execute()
+                    name, w = self.task_queue.get()
+                    # simulate work
+                    start = time.time()
+                    for _ in range(w * 1_000_000):
+                        pass
+                    elapsed = time.time() - start
+                    print(f"[{self.id}] Executed {name} w={w} in {elapsed:.2f}s")
+
+                    # replicate finished task to W nearest peers
+                    for peer_id, _ in sorted(DISTANCES[self.id].items(), key=lambda x: x[1])[: W]:
+                        stub = self.peers.get(peer_id)
+                        if stub:
+                            try:
+                                stub.SendTask(tasks_pb2.TaskRequest(name=name, weight=w))
+                                print(f"[{self.id}] Replicated task {name} to server {peer_id}")
+                            except Exception as e:
+                                print(f"[{self.id}] Error replicating to {peer_id}: {e}")
+
+                    # increment global counter and check shutdown
                     with self.global_counter.get_lock():
                         self.global_counter.value += 1
-                    print(f"[Server {self.id}] Total tasks done: {self.global_counter.value}")
-                    if self.global_counter.value >= self.max_tasks:
-                        print(f"[Server {self.id}] Reached task limit. Shutting down.")
-                        os._exit(0)
-                    else:
-                        self.try_to_steal()
-                    time.sleep(1)
+                        if self.global_counter.value >= self.max_tasks:
+                            print(f"[{self.id}] Max tasks reached. Exiting.")
+                            os._exit(0)
 
-        t = threading.Thread(target=process_loop, daemon=True)
+                    # attempt to steal
+                    self.try_steal()
+                time.sleep(0.5)
+        t = threading.Thread(target=loop, daemon=True)
         t.start()
 
-    def try_to_steal(self):
-
-        neighbors = sorted(DISTANCES[self.id].items(), key=lambda x: x[1])
-        close = [n[0] for n in neighbors[:2]]
-        far = [n[0] for n in neighbors[2:4]]
-        to_try = close + far
-
-        my_cpu = psutil.cpu_percent(interval=0.1)
+    def try_steal(self):
         my_len = self.task_queue.qsize()
-
-        for peer_id in to_try:
-            if peer_id not in self.peers:
+        for peer_id, _ in sorted(DISTANCES[self.id].items(), key=lambda x: x[1]):
+            stub = self.peers.get(peer_id)
+            if not stub:
                 continue
-
-            stub = self.peers[peer_id]
             try:
                 other_len = stub.GetQueueLength(tasks_pb2.Empty()).length
-                other_cpu = stub.GetCPUUsage(tasks_pb2.Empty()).usage
-
-                print(f"[Server {self.id}] trying to steal from {peer_id} | "
-                  f"my_len={my_len}, other_len={other_len}, "
-                  f"my_cpu={my_cpu:.2f}, other_cpu={other_cpu:.2f}")
-
-                if my_len < 5:
-                    can_steal = False
-                    if other_len > 5 or (my_len == 0 and other_len >= 2):
-                        if my_cpu < other_cpu:
-                            can_steal = True
-                    elif my_len < other_len and not (my_len == 2 and other_len == 3):
-                        if my_cpu < other_cpu:
-                            can_steal = True
-
-                    if can_steal:
-                        response = stub.StealTask(tasks_pb2.Empty())
-                        if response.success:
-                            self.task_queue.put(Task(response.task.name, response.task.duration))
-                            print(f"[Server {self.id}] stole {response.task.name} from {peer_id}")
-                            return  # Exit stealing after one successful steal
-
+                if other_len > my_len + 1:
+                    resp = stub.StealTask(tasks_pb2.Empty())
+                    if resp.success:
+                        self.task_queue.put((resp.task.name, resp.task.weight))
+                        print(f"[{self.id}] Stealing task {resp.task.name} from server {peer_id}")
+                        break
             except Exception as e:
-                print(f"[Server {self.id}] error contacting {peer_id}: {e}")
+                print(f"[{self.id}] Error stealing from {peer_id}: {e}")
                 continue
 
-
-    def _attempt_steal(self, stub, peer_id):
-        response = stub.StealTask(tasks_pb2.Empty())
-        if response.success:
-            self.task_queue.put(Task(response.task.name, response.task.duration))
-            print(f"[Server {self.id}] stole {response.task.name} from {peer_id}")
-
-
-def serve(server_id, port, global_counter, max_tasks):
+# --- Server Startup ---
+def serve(id, port, global_counter, max_tasks):
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
-    ts_server = TaskStealingServer(server_id, global_counter, max_tasks)
-    tasks_pb2_grpc.add_TaskStealingServiceServicer_to_server(ts_server, server)
+    servicer = NWRServer(id, port, global_counter, max_tasks)
+    tasks_pb2_grpc.add_TaskServiceServicer_to_server(servicer, server)
     server.add_insecure_port(f"[::]:{port}")
     server.start()
-    print(f"Server {server_id} started on port {port}")
-
-    # Connect to peers
-    for i in range(5):
-        if i == server_id:
-            continue
-        peer_port = 50050 + i
-        channel = grpc.insecure_channel(f"localhost:{peer_port}")
-        stub = tasks_pb2_grpc.TaskStealingServiceStub(channel)
-        ts_server.peers[i] = stub
-
-    ts_server.start_processing()
+    print(f"Server {id} listening on {port}")
+    # connect peers
+    for pid in range(N):
+        if pid == id: continue
+        ch = grpc.insecure_channel(f"localhost:{50050+pid}")
+        servicer.peers[pid] = tasks_pb2_grpc.TaskServiceStub(ch)
+    servicer.start_processing()
     server.wait_for_termination()
 
-if __name__ == "__main__":
+if __name__ == '__main__':
+    import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument("--id", type=int, required=True)
-    parser.add_argument("--port", type=int, required=True)
+    parser.add_argument('--id', type=int, required=True)
+    parser.add_argument('--port', type=int, required=True)
     parser.add_argument('--max_tasks', type=int, default=100)
     args = parser.parse_args()
-
-    global_counter = multiprocessing.Value("i", 0)  # shared integer
-    serve(args.id, args.port, global_counter, args.max_tasks)
+    gc = Value('i', 0)
+    serve(args.id, args.port, gc, args.max_tasks)

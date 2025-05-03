@@ -1,36 +1,56 @@
 syntax = "proto3";
 
-service TaskStealingService {
+service TaskService {
+  rpc SendTask(TaskRequest) returns (Ack);
   rpc GetQueueLength(Empty) returns (QueueLengthResponse);
   rpc GetCPUUsage(Empty) returns (CPUUsageResponse);
   rpc StealTask(Empty) returns (TaskResponse);
-  rpc SendTask(Task) returns (Ack);
+  rpc Heartbeat(Empty) returns (HeartbeatResponse);
+
+  rpc WriteData(WriteRequest) returns (Ack);
+  rpc ReadData(ReadRequest) returns (ReadResponse);
 }
 
 message Empty {}
 
-message QueueLengthResponse {
-  int32 length = 1;
-}
-
-message CPUResponse {
-  int32 usage = 1;
-}
-
-message CPUUsageResponse {
-    double usage = 1;
-}
-
-message Task {
+message TaskRequest {
   string name = 1;
-  float duration = 2;
+  int32 weight = 2;
 }
 
 message TaskResponse {
-  Task task = 1;
+  TaskRequest task = 1;
   bool success = 2;
 }
 
 message Ack {
   bool success = 1;
+}
+
+message QueueLengthResponse {
+  int32 length = 1;
+}
+
+message CPUUsageResponse {
+  double usage = 1;
+}
+
+message HeartbeatResponse {
+  int64 timestamp = 1;
+}
+
+message WriteRequest {
+  string key = 1;
+  string value = 2;
+}
+
+message ReadRequest {
+  string key = 1;
+  int32 read_quorum = 2;
+}
+
+message ReadResponse {
+  string value = 1;
+  bool success = 2;
+  int32 served_by = 3;
 }
