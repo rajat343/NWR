@@ -1,0 +1,36 @@
+syntax = "proto3";
+
+service TaskStealingService {
+  rpc GetQueueLength(Empty) returns (QueueLengthResponse);
+  rpc GetCPUUsage(Empty) returns (CPUUsageResponse);
+  rpc StealTask(Empty) returns (TaskResponse);
+  rpc SendTask(Task) returns (Ack);
+}
+
+message Empty {}
+
+message QueueLengthResponse {
+  int32 length = 1;
+}
+
+message CPUResponse {
+  int32 usage = 1;
+}
+
+message CPUUsageResponse {
+    double usage = 1;
+}
+
+message Task {
+  string name = 1;
+  float duration = 2;
+}
+
+message TaskResponse {
+  Task task = 1;
+  bool success = 2;
+}
+
+message Ack {
+  bool success = 1;
+}
