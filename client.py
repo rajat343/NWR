@@ -9,10 +9,12 @@ def main():
         stubs.append(tasks_pb2_grpc.TaskServiceStub(ch))
 
     # send 20 client tasks
-    for idx in range(20):
+    for idx in range(100):
         name   = f"ClientTask_{idx}"
         weight = random.randint(1,100)
-        target = random.choice(stubs)
+        eligible_targets = [stub for i, stub in enumerate(stubs) if i != 2]  # Exclude server 2
+        target = random.choice(eligible_targets)
+        # target = random.choice(stubs)
         res = target.SendTask(tasks_pb2.TaskRequest(
             name=name, weight=weight,
             replicated=False, source_id=-1

@@ -54,6 +54,31 @@ class NWRServer(tasks_pb2_grpc.TaskServiceServicer):
             print(f"[{self.id}] Received NEW task {req.name} (w={req.weight}) from client")
         return tasks_pb2.Ack(success=True)
 
+    def rank_peers(self):
+        ranked = []
+        for peer_id, dist in DISTANCES[self.id].items():
+            stub = self.peers.get(peer_id)
+            if not stub:
+                continue
+            try:
+                q_len = stub.GetQueueLength(tasks_pb2.Empty()).length
+                cpu = stub.GetCPUUsage(tasks_pb2.Empty()).usage
+                mem = psutil.virtual_memory().percent  # You can also get this remotely if needed
+
+                # if cpu > my_cpu and q_len >= my_queue_len:
+                #     continue
+
+                # Calculate weighted rank: lower is better
+                rank = (0.4 * dist) + (0.2 * q_len) + (0.2 * cpu) + (0.2 * mem)
+                ranked.append((peer_id, rank))
+            except Exception as e:
+                print(f"[{self.id}] Error ranking peer {peer_id}: {e}")
+                continue
+
+        # Sort by rank ascending (best first)
+        ranked.sort(key=lambda x: x[1])
+        return [peer_id for peer_id, _ in ranked]
+
     def GetQueueLength(self, req, ctx):
         return tasks_pb2.QueueLengthResponse(length=self.local_queue.qsize())
 
@@ -110,7 +135,7 @@ class NWRServer(tasks_pb2_grpc.TaskServiceServicer):
         def rep_loop():
             while True:
                 name, w = self.replication_queue.get()
-                for peer_id, _ in sorted(DISTANCES[self.id].items(), key=lambda x: x[1])[:W]:
+                for peer_id in self.rank_peers()[:W]:
                     stub = self.peers.get(peer_id)
                     if not stub: continue
                     try:
@@ -157,26 +182,34 @@ class NWRServer(tasks_pb2_grpc.TaskServiceServicer):
                 # attempt a steal only after handling a local task
                 if src == 'local':
                     self.try_steal()
+                if self.local_queue.empty():
+                    print(f"[{self.id}] No local tasks on startup, attempting to steal...")
+                    self.try_steal()
         threading.Thread(target=proc_loop, daemon=True).start()
 
     def try_steal(self):
         my_len = self.local_queue.qsize()
         my_cpu = psutil.cpu_percent(interval=0.1)
-        for peer_id, _ in sorted(DISTANCES[self.id].items(), key=lambda x: x[1]):
+        if my_len >= 5:
+            return
+        for peer_id in self.rank_peers():
+            print(f"[{self.id}] Ranked peers for stealing: {self.rank_peers()}")
             stub = self.peers.get(peer_id)
-            if not stub: continue
+            if not stub:
+                continue
             try:
-                other_len = stub.GetQueueLength(tasks_pb2.Empty()).length
                 other_cpu = stub.GetCPUUsage(tasks_pb2.Empty()).usage
-                # steal only if they have more tasks AND lower CPU
+                other_len = stub.GetQueueLength(tasks_pb2.Empty()).length
+                print(f"[{self.id}] my local queue length: {my_len} and other: {other_len}")
                 if other_len > my_len + 1 and other_cpu < my_cpu:
                     resp = stub.StealTask(tasks_pb2.Empty())
                     if resp.success:
                         self.local_queue.put((resp.task.name, resp.task.weight))
-                        print(f"[{self.id}] Stole {resp.task.name} from server {peer_id}")
+                        print(f"[{self.id}] Stealing task {resp.task.name} from server {peer_id}")
                         break
             except Exception as e:
-                print(f"[{self.id}] Steal err→{peer_id}: {e}")
+                print(f"[{self.id}] Error stealing from {peer_id}: {e}")
+                continue
 
 # --- server launcher ---
 def serve(id, port, global_counter, max_tasks):
