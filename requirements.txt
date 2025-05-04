@@ -1,4 +1,5 @@
-grpcio
-grpcio-tools
-protobuf
-psutil
+grpcio==1.71.0
+grpcio-tools==1.71.0
+protobuf==5.29.4
+psutil==7.0.0
+setuptools==80.3.0
