@@ -143,7 +143,6 @@ class NWRServer(tasks_pb2_grpc.TaskServiceServicer):
                 for _ in range(w * 1_000_000): pass
                 elapsed = time.time() - start
                 print(f"[{self.id}] Executed {name} w={w} in {elapsed:.2f}s (src={src})")
-
                 # only newly‐executed local tasks replicate
                 if src == 'local':
                     self.replication_queue.put((name, w))
