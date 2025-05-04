@@ -14,13 +14,15 @@ service TaskService {
 message Empty {}
 
 message TaskRequest {
-  string name = 1;
-  int32 weight = 2;
+  string name      = 1;
+  int32  weight    = 2;      // 1–100
+  bool   replicated = 3;     // true if this is a replication
+  int32  source_id  = 4;     // server ID if replicated
 }
 
 message TaskResponse {
   TaskRequest task = 1;
-  bool success = 2;
+  bool success     = 2;
 }
 
 message Ack {
@@ -40,17 +42,17 @@ message HeartbeatResponse {
 }
 
 message WriteRequest {
-  string key = 1;
+  string key   = 1;
   string value = 2;
 }
 
 message ReadRequest {
-  string key = 1;
-  int32 read_quorum = 2;
+  string key         = 1;
+  int32  read_quorum = 2;
 }
 
 message ReadResponse {
-  string value = 1;
-  bool success = 2;
-  int32 served_by = 3;
+  string value     = 1;
+  bool   success   = 2;
+  int32  served_by = 3;
 }
