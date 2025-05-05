@@ -200,6 +200,8 @@ class NWRServer(tasks_pb2_grpc.TaskServiceServicer):
                             executed=True,
                             result=self.data_store[TASK_KEY(name)]
                         ))
+                        print(f"[{self.id}] Replicated {name} → server {pid}")
+                        self._reset_peer(pid)
                     except grpc.RpcError as e:
                         if e.code() == grpc.StatusCode.UNAVAILABLE:
                             self._log_down(pid)
