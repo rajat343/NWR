@@ -10,6 +10,7 @@ LOG_COOLDOWN = 10
 DISTANCES = {}  # will be populated dynamically
 N, W, R = 5, 3, 2
 TASK_KEY = lambda name: f"task::{name}"
+DISTANCE_LOCK = threading.Lock()
 
 class NWRServer(tasks_pb2_grpc.TaskServiceServicer):
     def __init__(self, server_id, port, global_counter, max_tasks, distances):
@@ -52,8 +53,9 @@ class NWRServer(tasks_pb2_grpc.TaskServiceServicer):
             ch = grpc.insecure_channel(host)
             self.peers[pid] = tasks_pb2_grpc.TaskServiceStub(ch)
             print(f"[{self.id}] Added peer {pid} @ {host}")
-        DISTANCES[self.id][pid]     = dist
-        DISTANCES.setdefault(pid,{})[self.id] = dist
+            with DISTANCE_LOCK:
+                DISTANCES[self.id][pid]     = dist
+                DISTANCES.setdefault(pid,{})[self.id] = dist
 
     def AnnouncePresence(self, req, ctx):
         self.add_peer(req.server_id, req.host, req.dist)
@@ -75,21 +77,26 @@ class NWRServer(tasks_pb2_grpc.TaskServiceServicer):
 
     def rank_peers(self):
         ranked = []
-        for pid, dist in DISTANCES[self.id].items():
-            stub = self.peers.get(pid)
-            if not stub: continue
+
+        with DISTANCE_LOCK:
+            distance_copy = dict(DISTANCES.get(self.id, {}))  # avoid iterating live dict
+
+        for peer_id, dist in distance_copy.items():
+            stub = self.peers.get(peer_id)
+            if not stub:
+                continue
             try:
-                qlen = stub.GetQueueLength(tasks_pb2.Empty()).length
-                cpu  = stub.GetCPUUsage(tasks_pb2.Empty()).usage
-                mem  = psutil.virtual_memory().percent
-                score = 0.4*dist + 0.2*qlen + 0.2*cpu + 0.2*mem
-                ranked.append((pid, score))
-                self._reset_peer(pid)
-            except grpc.RpcError as e:
+                q_len = stub.GetQueueLength(tasks_pb2.Empty()).length
+                cpu = stub.GetCPUUsage(tasks_pb2.Empty()).usage
+                mem = psutil.virtual_memory().percent  # optional: replace with stub metric
+                rank = (0.4 * dist) + (0.2 * q_len) + (0.2 * cpu) + (0.2 * mem)
+                ranked.append((peer_id, rank))
+            except Exception as e:
                 if e.code() == grpc.StatusCode.UNAVAILABLE:
-                    self._log_down(pid)
-        ranked.sort(key=lambda x:x[1])
-        return [pid for pid,_ in ranked]
+                    self._log_down(peer_id)
+
+        ranked.sort(key=lambda x: x[1])
+        return [peer_id for peer_id, _ in ranked]
 
     def SendTask(self, req, ctx):
         # result propagation
@@ -245,20 +252,33 @@ class NWRServer(tasks_pb2_grpc.TaskServiceServicer):
     def try_steal(self):
         my_len = self.local_queue.qsize()
         my_cpu = psutil.cpu_percent(interval=0.1)
+
         for pid in self.rank_peers():
             stub = self.peers.get(pid)
-            if not stub: continue
+            if not stub:
+                continue
+
+            print(f"[{self.id}] Attempting to steal from server {pid}...")
+
             try:
                 other_len = stub.GetQueueLength(tasks_pb2.Empty()).length
                 other_cpu = stub.GetCPUUsage(tasks_pb2.Empty()).usage
+
+                print(f"[{self.id}] 🧮 Comparison with server {pid} → "
+                  f"my_len={my_len}, other_len={other_len}, "
+                  f"my_cpu={my_cpu:.2f}%, other_cpu={other_cpu:.2f}%")
+
                 if other_len > my_len + 1 and other_cpu < my_cpu:
                     resp = stub.StealTask(tasks_pb2.Empty())
                     if resp.success:
                         self.local_queue.put((resp.task.name, resp.task.weight))
-                        print(f"[{self.id}] Stole {resp.task.name} from server {pid}")
+                        print(f"[{self.id}] ✅ Stole {resp.task.name} from server {pid}")
                         break
+                    else:
+                        print(f"[{self.id}] ❌ No task to steal from server {pid}")
             except grpc.RpcError:
                 self._log_down(pid)
+
 
 def serve():
     parser = argparse.ArgumentParser()
