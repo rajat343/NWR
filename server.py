@@ -221,7 +221,7 @@ class NWRServer(tasks_pb2_grpc.TaskServiceServicer):
                 name, w = self.replication_queue.get()
                 
                 # Replicate to W nearest peers
-                for peer_id, _ in sorted(DISTANCES[self.id].items(), key=lambda x: x[1])[:W]:
+                for peer_id, _ in sorted(DISTANCES[self.id].items(), key=lambda x: x[1])[:W-1]:
                     stub = self.peers.get(peer_id)
                     if not stub: 
                         continue
