@@ -35,7 +35,7 @@ def main():
     eligible_stubs = [stub for i, stub in enumerate(stubs) if i != 2]
 
     print("🚀 Sending tasks...")
-    for idx in range(20):
+    for idx in range(50):
         name = f"ClientTask_{idx}"
         weight = random.randint(1, 100)
 
