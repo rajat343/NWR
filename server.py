@@ -42,7 +42,6 @@ class NWRServer(tasks_pb2_grpc.TaskServiceServicer):
         rec = self.failures[pid]
         now = time.time(); rec["count"] += 1
         if now - rec["last"] > LOG_COOLDOWN:
-            print(f"[{self.id}] peer {pid} DOWN (consec={rec['count']})")
             rec["last"] = now
 
     def _reset_peer(self, pid):
@@ -264,7 +263,7 @@ class NWRServer(tasks_pb2_grpc.TaskServiceServicer):
                 other_len = stub.GetQueueLength(tasks_pb2.Empty()).length
                 other_cpu = stub.GetCPUUsage(tasks_pb2.Empty()).usage
 
-                print(f"[{self.id}] 🧮 Comparison with server {pid} → "
+                print(f"[{self.id}] Comparison with server {pid} → "
                   f"my_len={my_len}, other_len={other_len}, "
                   f"my_cpu={my_cpu:.2f}%, other_cpu={other_cpu:.2f}%")
 
@@ -272,10 +271,10 @@ class NWRServer(tasks_pb2_grpc.TaskServiceServicer):
                     resp = stub.StealTask(tasks_pb2.Empty())
                     if resp.success:
                         self.local_queue.put((resp.task.name, resp.task.weight))
-                        print(f"[{self.id}] ✅ Stole {resp.task.name} from server {pid}")
+                        print(f"[{self.id}] Stole {resp.task.name} from server {pid}")
                         break
                     else:
-                        print(f"[{self.id}] ❌ No task to steal from server {pid}")
+                        print(f"[{self.id}] No task to steal from server {pid}")
             except grpc.RpcError:
                 self._log_down(pid)
 

@@ -21,7 +21,7 @@ def discover_servers():
                 stub = tasks_pb2_grpc.TaskServiceStub(ch)
                 with lock:
                     active_stubs[server_id] = stub
-                print(f"✅ Connected to server {server_id} on port {port}")
+                print(f"Connected to server {server_id} on port {port}")
             except:
                 continue
         time.sleep(2)
@@ -59,7 +59,7 @@ def main():
             )
             print(f"Client → Sent {name} w={weight} to server {sid}, ack={res.success}")
         except Exception as e:
-            print(f"⚠️ Failed to send {name}: {e}")
+            print(f"Failed to send {name}: {e}")
         time.sleep(0.5)
 
     # Optional demo: NWR write/read
