@@ -41,7 +41,6 @@ class NWRServer(tasks_pb2_grpc.TaskServiceServicer):
         rec = self.failures[pid]
         now = time.time(); rec["count"] += 1
         if now - rec["last"] > LOG_COOLDOWN:
-            print(f"[{self.id}] peer {pid} DOWN (consec={rec['count']})")
             rec["last"] = now
 
     def _reset_peer(self, pid):
