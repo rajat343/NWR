@@ -9,6 +9,7 @@ service TaskService {
 
   rpc WriteData(WriteRequest) returns (Ack);
   rpc ReadData(ReadRequest) returns (ReadResponse);
+  rpc GetResult(GetResultRequest) returns (GetResultResponse);
 }
 
 message Empty {}
@@ -18,6 +19,8 @@ message TaskRequest {
   int32  weight    = 2;      // 1–100
   bool   replicated = 3;     // true if this is a replication
   int32  source_id  = 4;     // server ID if replicated
+  bool executed = 5;      // NEW  – true ⇒ this message carries a finished result
+  string result = 6;      // NEW  – opaque result payload
 }
 
 message TaskResponse {
@@ -56,3 +59,6 @@ message ReadResponse {
   bool   success   = 2;
   int32  served_by = 3;
 }
+
+message GetResultRequest  { string name = 1; }
+message GetResultResponse { bool success = 1; string result = 2; int32 served_by = 3; }
