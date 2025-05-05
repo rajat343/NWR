@@ -228,7 +228,8 @@ class NWRServer(tasks_pb2_grpc.TaskServiceServicer):
                     try:
                         stub.SendTask(tasks_pb2.TaskRequest(
                             name=name, weight=w,
-                            replicated=True, source_id=self.id
+                            replicated=True, source_id=self.id,
+                            executed=True
                         ))
                         print(f"[{self.id}] Replicated {name} → server {peer_id}")
                         self._reset_peer(peer_id) 
