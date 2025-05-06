@@ -9,7 +9,8 @@ D2='{"0":2,"1":1,"3":1,"4":2}'
 D3='{"0":3,"1":2,"2":1,"4":1}'
 D4='{"0":4,"1":3,"2":2,"3":1}'
 
-for i in 0 1 2 3 4; do
+for i in 0 1; do 
+  #Here in one system we are starting two servers, in other system we are starting 2,3,4
   PORT=$((50050 + i))
   DIST_VAR="D$i"
   DISTANCES="${!DIST_VAR}"

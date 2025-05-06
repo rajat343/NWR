@@ -11,6 +11,13 @@ DISTANCES = {}  # will be populated dynamically
 N, W, R = 5, 3, 2
 TASK_KEY = lambda name: f"task::{name}"
 DISTANCE_LOCK = threading.Lock()
+SERVER_IPS = {
+    0: "192.168.1.2",
+    1: "192.168.1.2",
+    2: "192.168.1.1",
+    3: "192.168.1.1",
+    4: "192.168.1.1",
+}
 
 class NWRServer(tasks_pb2_grpc.TaskServiceServicer):
     def __init__(self, server_id, port, global_counter, max_tasks, distances):
@@ -66,7 +73,7 @@ class NWRServer(tasks_pb2_grpc.TaskServiceServicer):
             try:
                 stub.AnnouncePresence(tasks_pb2.ServerInfo(
                     server_id=self.id,
-                    host=f"localhost:{self.port}",
+                    host=f"{SERVER_IPS[pid]}:{self.port}",
                     dist=DISTANCES[self.id][pid]
                 ))
                 print(f"[{self.id}] Announced to {pid}")
@@ -74,7 +81,7 @@ class NWRServer(tasks_pb2_grpc.TaskServiceServicer):
                 if e.code() == grpc.StatusCode.UNAVAILABLE:
                     self._log_down(pid)
 
-    def rank_peers(self):
+    def rank_peers(self, task_weight=0, purpose="steal"):
         ranked = []
 
         with DISTANCE_LOCK:
@@ -87,8 +94,11 @@ class NWRServer(tasks_pb2_grpc.TaskServiceServicer):
             try:
                 q_len = stub.GetQueueLength(tasks_pb2.Empty()).length
                 cpu = stub.GetCPUUsage(tasks_pb2.Empty()).usage
-                mem = psutil.virtual_memory().percent  # optional: replace with stub metric
-                rank = (0.4 * dist) + (0.2 * q_len) + (0.2 * cpu) + (0.2 * mem)
+                mem = psutil.virtual_memory().percent
+                if purpose == "steal":
+                    rank = (0.4 * dist) + (0.3 * q_len) + (0.2 * cpu) + (0.2 * mem) - (0.15 * task_weight)
+                else:
+                    rank = (0.4 * dist) - (0.3 * q_len) + (0.2 * cpu) + (0.2 * mem) - (0.15 * task_weight)
                 ranked.append((peer_id, rank))
             except Exception as e:
                 if e.code() == grpc.StatusCode.UNAVAILABLE:
@@ -129,7 +139,7 @@ class NWRServer(tasks_pb2_grpc.TaskServiceServicer):
         key = TASK_KEY(req.name)
         if key in self.data_store:
             return tasks_pb2.GetResultResponse(success=True, result=self.data_store[key], served_by=self.id)
-        for pid in self.rank_peers()[:R]:
+        for pid in self.rank_peers(purpose="replication")[:R]:
             stub = self.peers.get(pid)
             if not stub: continue
             try:
@@ -143,7 +153,7 @@ class NWRServer(tasks_pb2_grpc.TaskServiceServicer):
     def WriteData(self, req, ctx):
         self.data_store[req.key] = req.value
         acks = 1
-        for pid in self.rank_peers()[:W-1]:
+        for pid in self.rank_peers(task_weight=0, purpose="replication")[:W-1]:
             stub = self.peers.get(pid)
             if not stub: continue
             try:
@@ -158,7 +168,7 @@ class NWRServer(tasks_pb2_grpc.TaskServiceServicer):
     def ReadData(self, req, ctx):
         if req.key in self.data_store:
             return tasks_pb2.ReadResponse(value=self.data_store[req.key], success=True, served_by=self.id)
-        for pid in self.rank_peers():
+        for pid in self.rank_peers(purpose="replication"):
             stub = self.peers.get(pid)
             if not stub: continue
             try:
@@ -196,7 +206,7 @@ class NWRServer(tasks_pb2_grpc.TaskServiceServicer):
         def loop():
             while True:
                 name, w = self.replication_queue.get()
-                for pid in self.rank_peers()[:W-1]:
+                for pid in self.rank_peers(task_weight=w, purpose="replication")[:W-1]:
                     stub = self.peers.get(pid)
                     if not stub: continue
                     try:
@@ -252,7 +262,7 @@ class NWRServer(tasks_pb2_grpc.TaskServiceServicer):
         my_len = self.local_queue.qsize()
         my_cpu = psutil.cpu_percent(interval=0.1)
 
-        for pid in self.rank_peers():
+        for pid in self.rank_peers(task_weight=0, purpose="steal"):
             stub = self.peers.get(pid)
             if not stub:
                 continue
@@ -304,7 +314,7 @@ def serve():
     # connect to known peers
     for pid in distances:
         if pid == args.id: continue
-        host = f"localhost:{50050+pid}"
+        host = f"{SERVER_IPS[pid]}:{50050+pid}"
         svc.peers[pid] = tasks_pb2_grpc.TaskServiceStub(grpc.insecure_channel(host))
 
     svc.announce_to_peers()

@@ -9,6 +9,14 @@ EXCLUDED_SERVERS = {2}  # Optional: initially avoid server 2
 active_stubs = {}
 lock = threading.Lock()
 
+SERVER_IPS = {
+    0: "192.168.1.2",
+    1: "192.168.1.2",
+    2: "192.168.1.1",
+    3: "192.168.1.1",
+    4: "192.168.1.1",
+}
+
 def discover_servers():
     while True:
         for port in PORT_RANGE:
@@ -16,7 +24,7 @@ def discover_servers():
             if server_id in active_stubs:
                 continue
             try:
-                ch = grpc.insecure_channel(f"localhost:{port}")
+                ch = grpc.insecure_channel(f"{SERVER_IPS[server_id]}:{port}")
                 grpc.channel_ready_future(ch).result(timeout=1)
                 stub = tasks_pb2_grpc.TaskServiceStub(ch)
                 with lock:
@@ -48,7 +56,7 @@ def main():
     threading.Thread(target=discover_servers, daemon=True).start()
     time.sleep(3)  # Allow some time to populate stubs
 
-    for idx in range(100):
+    for idx in range(500):
         name = f"ClientTask_{idx}"
         weight = random.randint(1, 100)
         try:
